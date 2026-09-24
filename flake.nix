@@ -10,6 +10,7 @@
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
+    devenv.url = "github:cachix/devenv";
     bun2nix = {
       # https://github.com/nix-community/bun2nix/pull/106
       url = "github:Mic92/bun2nix/fix-structured-attrs-hook";
@@ -25,9 +26,16 @@
         "aarch64-linux"
         "aarch64-darwin"
       ];
+      imports = [ inputs.devenv.flakeModule ];
 
       perSystem =
-        { self', pkgs, ... }:
+        {
+          self',
+          inputs',
+          pkgs,
+          config,
+          ...
+        }:
         let
           inherit (pkgs) lib;
 
@@ -69,6 +77,7 @@
           # directly (final = prev = pkgs) instead of pkgs.extend, which
           # would re-run the whole nixpkgs fixpoint for this one leaf.
           bun2nixLib = (inputs.bun2nix.overlays.default pkgs pkgs).bun2nix;
+          inherit (inputs'.bun2nix.packages) bun2nix;
         in
         {
           packages =
@@ -91,6 +100,26 @@
                 else
                   self'.packages.codex-chatgpt-web-cli;
             };
+          devenv.shells.default = {
+            packages = [
+              config.packages.codex-chatgpt-web-cli
+              bun2nix
+            ];
+            tasks."bun2nix:sync" = {
+              exec = ''
+                ${lib.getExe bun2nix} -l bun.lock -o nix/bun.nix
+                ${lib.getExe bun2nix} -l launcher/bun.lock -o nix/bun-launcher.nix
+              '';
+            };
+            scripts.bun2nix-sync.exec = ''
+              ${lib.getExe bun2nix} -l bun.lock -o nix/bun.nix
+              ${lib.getExe bun2nix} -l launcher/bun.lock -o nix/bun-launcher.nix
+            '';
+          };
         };
     };
+  nixConfig = {
+    extra-substituters = [ "https://devenv.cachix.org" ];
+    extra-trusted-public-keys = [ "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=" ];
+  };
 }
