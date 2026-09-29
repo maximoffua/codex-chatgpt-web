@@ -523,7 +523,13 @@ function parseConfig(value: unknown, path: string): AppConfig {
     || parsed.runtimeCommand.some(part => typeof part !== "string" || !part.trim())) {
     throw new Error(`Invalid runtimeCommand in ${path}`);
   }
-  assertDurableRuntimeCommand(parsed.runtimeCommand as string[]);
+  try {
+    assertDurableRuntimeCommand(parsed.runtimeCommand as string[]);
+  } catch {
+    // ponytail: stored absolute paths rot when the runtime moves (Nix store GC, package
+    // upgrade); re-resolve instead of dead-ending setup, the only path that rewrites them.
+    parsed.runtimeCommand = currentRuntimeCommand();
+  }
   if (parsed.extraHighAvailable !== undefined && typeof parsed.extraHighAvailable !== "boolean") {
     throw new Error(`Invalid extraHighAvailable in ${path}`);
   }

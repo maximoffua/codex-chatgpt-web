@@ -5,7 +5,7 @@
     # Pinned to the nixpkgs revision this packaging was developed against
     # (same pin as llm-agents-nix). Update freely; electron_41 + bun2nix
     # move with nixpkgs-unstable.
-    nixpkgs.url = "github:NixOS/nixpkgs/da39501c8d0a093136854eddcd6927c8a8bb0d8f";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
@@ -32,11 +32,19 @@
         {
           self',
           inputs',
-          pkgs,
           config,
+          system,
           ...
         }:
         let
+          pkgs = import inputs.nixpkgs {
+            inherit system;
+            config = {
+              permittedInsecurePackages = [
+                "electron-41.10.6"
+              ];
+            };
+          };
           inherit (pkgs) lib;
 
           # Single source of truth for both packages (mirrors upstream tags:
