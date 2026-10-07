@@ -41,7 +41,7 @@
             inherit system;
             config = {
               permittedInsecurePackages = [
-                "electron-41.10.6"
+                "electron-41.10.7"
               ];
             };
           };
