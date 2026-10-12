@@ -1352,9 +1352,10 @@ test("model catalog health distinguishes no request, transport failure, upstream
   try {
     expect(await health()).toMatchObject({ model_catalog_requests: 0, last_model_catalog_result: null });
     const unauthenticated = await fetch(`${base}/v1/models`);
-    expect(unauthenticated.status).toBe(502);
-    await unauthenticated.text();
-    expect((await health()).last_model_catalog_result.failure.stage).toBe("request");
+    expect(unauthenticated.status).toBe(200);
+    expect((await unauthenticated.json() as { object: string }).object).toBe("list");
+    // Local OpenAI discovery does not create a native upstream attempt.
+    expect((await health()).last_model_catalog_result).toBeNull();
     for (const [next, status, stage] of [
       ["transport", 502, "transport"], ["denied", 403, "upstream"], ["invalid", 502, "catalog"], ["ready", 200, undefined],
     ] as const) {
@@ -1369,7 +1370,7 @@ test("model catalog health distinguishes no request, transport failure, upstream
       expect(JSON.stringify(snapshot)).not.toContain("private");
       expect(snapshot.successful_model_catalog_requests).toBe(next === "ready" ? 1 : 0);
     }
-    expect((await health()).model_catalog_requests).toBe(5);
+    expect((await health()).model_catalog_requests).toBe(4);
   } finally {
     await server.stop(true);
   }

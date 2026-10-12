@@ -103,11 +103,18 @@ try {
     throw new Error(`unexpected health payload: ${JSON.stringify(payload)}`);
   }
 
-  const unauthenticatedModels = await fetch(`http://127.0.0.1:${port}/v1/models`);
-  const unauthenticatedModelsBody = await unauthenticatedModels.json() as { error?: { message?: string } };
-  if (unauthenticatedModels.status !== 502
-    || !unauthenticatedModelsBody.error?.message?.includes("incoming Bearer authorization")) {
-    throw new Error(`native model passthrough did not fail closed without Codex auth: ${JSON.stringify(unauthenticatedModelsBody)}`);
+  for (const authorization of [null, "Bearer local-placeholder"]) {
+    const headers = new Headers();
+    if (authorization) headers.set("authorization", authorization);
+    const discovery = await fetch(`http://127.0.0.1:${port}/v1/models`, { headers });
+    const body = await discovery.json() as {
+      object?: string;
+      data?: Array<{ id?: string; object?: string }>;
+    };
+    if (discovery.status !== 200 || body.object !== "list" || !Array.isArray(body.data)
+      || !body.data.some(model => model.id === "chatgpt-low" && model.object === "model")) {
+      throw new Error(`generic model discovery did not return OpenAI-format aliases: ${JSON.stringify(body)}`);
+    }
   }
   const websocketNegotiation = await fetch(`http://127.0.0.1:${port}/v1/responses`);
   if (websocketNegotiation.status !== 426) {

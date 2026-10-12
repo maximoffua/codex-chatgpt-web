@@ -5,7 +5,36 @@ import {
   availableChatGptWebModelRoutes,
   resolveChatGptWebContextLimits,
 } from "../src/chatgpt-web-models";
-import { modelsRequest } from "../src/server";
+import { isOpenAiCompatibleModelDiscovery, modelsRequest, openAiCompatibleModelsRequest } from "../src/server";
+
+test("generic OpenAI clients discover flat Web models without upstream Codex OAuth", async () => {
+  const config = defaultConfig("full");
+  config.solAvailable = true;
+  config.extraHighAvailable = true;
+  config.proAvailable = true;
+  for (const authorization of [null, "Bearer local-placeholder", "Bearer sk-local-test", "Bearer dummy"]) {
+    const headers = new Headers();
+    if (authorization !== null) headers.set("authorization", authorization);
+    expect(isOpenAiCompatibleModelDiscovery(new Request("http://127.0.0.1/v1/models", { headers }))).toBeTrue();
+  }
+  expect(isOpenAiCompatibleModelDiscovery(new Request("http://127.0.0.1/v1/models", {
+    headers: { authorization: "Bearer real-codex-oauth-token" },
+  }))).toBeFalse();
+  const response = openAiCompatibleModelsRequest(config);
+  expect(response.status).toBe(200);
+  const body = await response.json() as {
+    object: string;
+    data: Array<{ id: string; object: string; owned_by: string }>;
+  };
+  expect(body.object).toBe("list");
+  expect(body.data.slice(0, 5).map(model => model.id)).toEqual([
+    "chatgpt-low", "chatgpt-medium", "chatgpt-high", "chatgpt-xhigh", "chatgpt-pro",
+  ]);
+  expect(body.data.every(model => model.object === "model" && model.owned_by === "chatgpt-web")).toBeTrue();
+  expect(body.data.some(model => model.id === "gpt-5.6-sol")).toBeFalse();
+  expect((await openAiCompatibleModelsRequest(config, "chatgpt-high").json()).id).toBe("chatgpt-high");
+  expect(openAiCompatibleModelsRequest(config, "unknown-model").status).toBe(404);
+});
 
 test("catalog diagnostics preserve safe causes without attributing an upstream abort to the client", async () => {
   for (const [error, code] of [
@@ -72,6 +101,7 @@ test("proxies official /models auth and query, then appends grouped and legacy W
   };
   expect(body.models.map(model => model.slug)).toEqual([
     "gpt-5.6-sol",
+    "chatgpt-low", "chatgpt-medium", "chatgpt-high", "chatgpt-xhigh", "chatgpt-pro",
     "chatgpt-web/gpt-6-sol-instant",
     "chatgpt-web/gpt-6-sol",
     "chatgpt-web/gpt-5.6-sol-instant",
@@ -85,6 +115,9 @@ test("proxies official /models auth and query, then appends grouped and legacy W
     "chatgpt-web/pro",
   ]);
   expect(body.models[0]!.context_window).toBe(300_000);
+  expect(body.models.slice(1, 6).map(model => model.slug)).toEqual([
+    "chatgpt-low", "chatgpt-medium", "chatgpt-high", "chatgpt-xhigh", "chatgpt-pro",
+  ]);
   expect(body.models[0]!.max_context_window).toBe(371_851);
   expect(body.models[0]!.auto_compact_token_limit).toBe(270_000);
   expect(body.models[0]!.multi_agent_version).toBe("v2");

@@ -5,6 +5,8 @@ export interface CodexParsedRequest {
   stream: boolean;
   options: CodexRequestOptions;
   _rawBody?: unknown;
+  /** Proxy-issued generic OpenAI request. Never deserialize from an incoming body. */
+  _genericOpenAiCompatible?: true;
   /** Set only by the trusted Web route, never parsed from caller-supplied model metadata. */
   _chatgptModelFamily?: "5.6" | "6";
   /** Number of leading raw input items restored from local previous_response_id state. */

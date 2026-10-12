@@ -37,6 +37,28 @@ describe("fixed ChatGPT Web model routes", () => {
   const plus = { solAvailable: true, extraHighAvailable: false, proAvailable: false };
   const pro = { solAvailable: true, extraHighAvailable: true, proAvailable: true };
 
+  test("flat public IDs bind GPT-6 and their fixed browser efforts despite caller overrides", () => {
+    for (const [modelId, effort] of [
+      ["chatgpt-low", "low"], ["chatgpt-medium", "medium"],
+      ["chatgpt-high", "high"], ["chatgpt-xhigh", "xhigh"],
+      ["chatgpt-pro", "max"],
+    ] as const) {
+      const request = parsed(modelId, "low");
+      const route = routeChatGptWebRequest(request, { ...defaultConfig("full"), ...pro });
+      expect(route.interactionMode).toBe("automatic");
+      expect("modelFamily" in route && route.modelFamily).toBe("6");
+      expect(route.adapterEffort).toBe(effort);
+      expect(request._chatgptModelFamily).toBe("6");
+      expect(request.options.reasoning).toBe(effort);
+      expect(request.modelId).toBe(CHATGPT_WEB_BACKEND_MODEL);
+    }
+    const proRequest = parsed("chatgpt-web/gpt-6-pro", "xhigh");
+    expect(routeChatGptWebRequest(proRequest, { ...defaultConfig("full"), ...pro }).adapterEffort).toBe("max");
+    expect(proRequest.options.reasoning).toBe("max");
+    const grouped = parsed("chatgpt-web/gpt-6-sol", "medium");
+    expect(routeChatGptWebRequest(grouped, { ...defaultConfig("full"), ...pro }).adapterEffort).toBe("medium");
+  });
+
   test("keeps the published legacy bindings while advertising named families", () => {
     expect(new Set(CHATGPT_WEB_MODEL_ROUTES.map(route => route.slug)).size).toBe(CHATGPT_WEB_MODEL_ROUTES.length);
     expect(CHATGPT_WEB_LEGACY_MODEL_ROUTES.map(route => [route.slug, route.codexEffort, route.adapterEffort])).toEqual([
@@ -47,6 +69,7 @@ describe("fixed ChatGPT Web model routes", () => {
       ["chatgpt-web/pro", "ultra", "max"],
     ]);
     expect(CHATGPT_WEB_MODEL_ROUTES.map(route => route.displayName)).toEqual([
+      "ChatGPT Low", "ChatGPT Medium", "ChatGPT High", "ChatGPT Extra High", "ChatGPT Pro",
       "GPT-6 Sol Instant (Web)", "GPT-6 Sol (Web)",
       "GPT-5.6 Sol Instant (Web)", "GPT-5.6 Sol (Web)", "GPT-5.6 Pro (Web)", "GPT-6 Pro (Web)",
     ]);
@@ -55,6 +78,7 @@ describe("fixed ChatGPT Web model routes", () => {
 
   test("exposes only Plus-eligible routes without the Pro account capability", () => {
     expect(availableChatGptWebModelRoutes(plus).map(route => route.slug)).toEqual([
+      "chatgpt-low", "chatgpt-medium", "chatgpt-high",
       "chatgpt-web/gpt-6-sol-instant",
       "chatgpt-web/gpt-6-sol",
       "chatgpt-web/gpt-5.6-sol-instant",
@@ -71,7 +95,7 @@ describe("fixed ChatGPT Web model routes", () => {
   test("Extra High stays routable without granting Pro or Pro-sized context", () => {
     const config = { ...defaultConfig("full"), extraHighAvailable: true, proAvailable: false };
     expect(availableChatGptWebModelRoutes(config).map(route => route.slug))
-      .toEqual(["chatgpt-web/gpt-6-sol-instant", "chatgpt-web/gpt-6-sol", "chatgpt-web/gpt-5.6-sol-instant", "chatgpt-web/gpt-5.6-sol"]);
+      .toEqual(["chatgpt-low", "chatgpt-medium", "chatgpt-high", "chatgpt-xhigh", "chatgpt-web/gpt-6-sol-instant", "chatgpt-web/gpt-6-sol", "chatgpt-web/gpt-5.6-sol-instant", "chatgpt-web/gpt-5.6-sol"]);
     const request = parsed("chatgpt-web/extra-high", "low");
     expect(routeChatGptWebRequest(request, config).adapterEffort).toBe("xhigh");
     expect(request.options.reasoning).toBe("xhigh");

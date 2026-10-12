@@ -602,5 +602,5 @@ test("refuses a ChatGPT Web continuation when local previous-response state is u
 
   expect(response.status).toBe(409);
   const body = await response.json() as { error: { message: string } };
-  expect(body.error.message).toContain("partial Codex context");
+  expect(body.error.message).toContain("Local state for previous_response_id is unavailable");
 });

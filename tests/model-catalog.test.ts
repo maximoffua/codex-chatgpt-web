@@ -93,7 +93,7 @@ describe("native /models augmentation", () => {
       expect((model.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort))
         .toEqual([...chatGptWebRouteEfforts(route, config)]);
     }
-    expect((web[1]!.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort))
+    expect((web.find(model => model.slug === "chatgpt-web/gpt-6-sol")!.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort))
       .toEqual(["medium", "high", "xhigh"]);
     expect(() => buildChatGptWebModel(originalModels[1], {
       ...CHATGPT_WEB_MODEL_ROUTES[1]!, supportedCodexEfforts: ["low", "medium"],
@@ -163,11 +163,7 @@ describe("native /models augmentation", () => {
       .map(model => model.slug);
 
     expect(spawnOverrides).toEqual([
-      "gpt-5.6-sol",
-      "chatgpt-web/gpt-6-sol",
-      "chatgpt-web/gpt-5.6-sol",
-      "chatgpt-web/gpt-5.6-pro",
-      "chatgpt-web/gpt-6-pro",
+      "gpt-5.6-sol", "chatgpt-low", "chatgpt-medium", "chatgpt-high", "chatgpt-xhigh",
     ]);
     expect(models.find(model => model.slug === "chatgpt-web/light")?.priority).toBe(3);
   });
@@ -212,10 +208,13 @@ describe("native /models augmentation", () => {
     (polluted.models as unknown[]).push(
       { slug: "chatgpt-web/gpt-5.6-sol", display_name: "legacy generic route" },
       { slug: "chatgpt-web/pro", display_name: "stale Pro route" },
+      { slug: "chatgpt-high", display_name: "stale flat route" },
     );
     const first = augmentNativeModelCatalog(polluted, config);
     const second = augmentNativeModelCatalog(first, config);
     const models = second.models as Array<Record<string, unknown>>;
+    expect(models.filter(model => model.slug === "chatgpt-high")).toHaveLength(1);
+    expect(models.find(model => model.slug === "chatgpt-high")?.display_name).toBe("ChatGPT High");
     const web = models.filter(model => String(model.slug).startsWith("chatgpt-web/"));
     expect(web.map(model => model.slug)).toEqual([
       "chatgpt-web/gpt-6-sol-instant", "chatgpt-web/gpt-6-sol",

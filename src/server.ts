@@ -33,6 +33,7 @@ import {
 } from "./codex-integration";
 import {
   CHATGPT_WEB_LUNA_BACKEND_MODEL,
+  availableChatGptWebModelRoutes,
   isChatGptWebModelSlug,
   requireChatGptWebModelRoute,
   type ChatGptWebModelRoute,
@@ -46,13 +47,15 @@ import {
   extractCompactUserMessages,
 } from "./responses/compaction";
 import { parseRequest } from "./responses/parser";
-import { expandPreviousResponseInput, flushResponseState, rememberResponseState } from "./responses/state";
+import { expandPreviousResponseInput, expandStatelessGenericToolOutputs, flushResponseState, rememberResponseState, previousResponseReplayPrefixLength, previousResponseGenericIdentity } from "./responses/state";
+import { prepareOpenAiCompatibleResponseBody } from "./responses/generic";
+import { asChatCompletionResponse, asChatCompletionSSE, prepareChatCompletionAsResponses } from "./chat-completions";
 import { namespacedToolName, type AdapterEvent, type CodexParsedRequest } from "./types";
 import type { CodexProviderConfig } from "./types";
 import type { ProviderAdapter } from "./adapters/base";
 import { VERSION } from "./version";
 
-type HttpTrackedEndpoint = "models" | "responses" | "compact" | "search" | "unspecified" | NativeImageEndpoint;
+type HttpTrackedEndpoint = "models" | "responses" | "chat_completions" | "compact" | "search" | "unspecified" | NativeImageEndpoint;
 
 export interface NativeCodexTurnIdentity {
   threadId: string;
@@ -570,6 +573,37 @@ export async function modelsRequest(
   return new Response(body, { status: upstream.status, statusText: upstream.statusText, headers });
 }
 
+/**
+ * Generic OpenAI clients commonly have no Codex OAuth credential. Advertise only the
+ * locally routed Web models for those callers; authenticated Codex discovery continues
+ * through modelsRequest() with its original upstream response and authorization.
+ */
+export function isOpenAiCompatibleModelDiscovery(req: Request): boolean {
+  const authorization = req.headers.get("authorization")?.trim();
+  if (!authorization) return true;
+  // A placeholder is a selector for this local catalog, never an upstream credential.
+  // Hermes uses "no-key-required" for custom local endpoints and some local
+  // runtimes use "dummy-actual-local-api-key"; neither is a Codex OAuth token.
+  const bearer = /^Bearer\s+(.+)$/i.exec(authorization)?.[1];
+  return bearer !== undefined && /^(?:local-placeholder|dummy|not-needed|no-key-required|dummy-actual-local-api-key|sk-local-[\w-]+|sk-dummy-[\w-]+)$/i.test(bearer);
+}
+
+export function openAiCompatibleModelsRequest(config: AppConfig, modelId?: string): Response {
+  const models = availableChatGptWebModelRoutes(config).map(route => ({
+    id: route.slug,
+    object: "model" as const,
+    created: 0,
+    owned_by: "chatgpt-web",
+  }));
+  if (modelId !== undefined) {
+    const model = models.find(item => item.id === modelId);
+    return model
+      ? Response.json(model)
+      : formatErrorResponse(404, "invalid_request_error", `Model ${JSON.stringify(modelId)} is not available`);
+  }
+  return Response.json({ object: "list", data: models });
+}
+
 export async function nativeSearchRequest(
   req: Request,
   fetchUpstream?: NativeFetch,
@@ -633,8 +667,10 @@ export async function responseRequest(
   const requestedModel = raw && typeof raw === "object" && !Array.isArray(raw)
     ? (raw as { model?: unknown }).model
     : undefined;
+  let hasNativeTurnIdentity = false;
   try {
     const identity = extractCodexTurnIdentityFromBody(raw);
+    hasNativeTurnIdentity = Boolean(identity.threadId && identity.turnId);
     if (identity.threadId && identity.turnId) {
       options.onTurnIdentity?.({ threadId: identity.threadId, turnId: identity.turnId });
     }
@@ -651,13 +687,26 @@ export async function responseRequest(
   const requestedPreviousResponseId = raw && typeof raw === "object" && !Array.isArray(raw)
     ? (raw as { previous_response_id?: unknown }).previous_response_id
     : undefined;
-  const expanded = expandPreviousResponseInput(raw);
+  const genericOpenAiRequest = typeof requestedModel === "string"
+    && isChatGptWebModelSlug(requestedModel) && !hasNativeTurnIdentity;
+  const previousExpanded = expandPreviousResponseInput(raw, genericOpenAiRequest ? "generic" : "native");
+  const expanded = genericOpenAiRequest
+    ? expandStatelessGenericToolOutputs(previousExpanded)
+    : previousExpanded;
+  const replayedInputPrefixLength = previousResponseReplayPrefixLength(expanded);
   const prediction = isCodexComposerPrediction(raw);
   let executionConfig = config;
   let parsed: CodexParsedRequest;
   let route: ChatGptWebModelRoute;
   try {
-    parsed = parseRequest(expanded);
+    const prepared = genericOpenAiRequest
+      ? prepareOpenAiCompatibleResponseBody(expanded, replayedInputPrefixLength, previousResponseGenericIdentity(expanded))
+      : expanded;
+    parsed = parseRequest(prepared);
+    if (genericOpenAiRequest) {
+      parsed._genericOpenAiCompatible = true;
+      if (replayedInputPrefixLength > 0) parsed._replayPrefixLen = replayedInputPrefixLength;
+    }
     if (prediction) executionConfig = configureComposerPrediction(parsed, config);
     route = routeChatGptWebRequest(parsed, executionConfig);
     const identity = extractChatGptTurnIdentity(parsed);
@@ -679,7 +728,9 @@ export async function responseRequest(
     return formatErrorResponse(
       409,
       "invalid_request_error",
-      "Local continuation state for previous_response_id is unavailable; refusing to run ChatGPT Web with partial Codex context. Compact the Codex task or start a new task before retrying.",
+      genericOpenAiRequest
+        ? "Local state for previous_response_id is unavailable. Start a new conversation or provide the complete input history."
+        : "Local continuation state for previous_response_id is unavailable; refusing to run ChatGPT Web with partial Codex context. Compact the Codex task or start a new task before retrying.",
     );
   }
 
@@ -695,9 +746,17 @@ export async function responseRequest(
 
   const compaction = parsed._compactionRequest === true;
   const compactionItem = compaction && parsed._compactionResponseFormat !== "message";
+  const genericResponseIdentity = parsed._genericOpenAiCompatible
+    ? extractChatGptTurnIdentity(parsed)
+    : undefined;
   const rememberCompletedResponse = (response: Record<string, unknown>): void => {
     if (!compaction) {
-      if (options.rememberState !== false) rememberResponseState(parsed._rawBody, response, { force: true });
+      if (options.rememberState !== false) rememberResponseState(parsed._rawBody, response, {
+        force: true,
+        ...(genericResponseIdentity?.threadId && genericResponseIdentity.turnId
+          ? { genericIdentity: { threadId: genericResponseIdentity.threadId, turnId: genericResponseIdentity.turnId } }
+          : {}),
+      });
       return;
     }
     if (response.status !== "completed") return;
@@ -838,6 +897,66 @@ export async function responseRequest(
   });
   rememberCompletedResponse(json);
   return Response.json(json);
+}
+
+export async function chatCompletionsRequest(
+  req: Request,
+  config: AppConfig,
+  adapterFactory: ChatGptWebAdapterFactory = createChatGptWebAdapter,
+  options: ResponseRequestOptions = {},
+): Promise<Response> {
+  let body: Record<string, unknown>;
+  let includeUsage = false;
+  try {
+    const raw = await readJsonRequestBody(req);
+    const options = raw && typeof raw === "object" && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>).stream_options
+      : undefined;
+    includeUsage = Boolean(options && typeof options === "object" && !Array.isArray(options)
+      && (options as { include_usage?: unknown }).include_usage === true);
+    body = prepareChatCompletionAsResponses(raw);
+  } catch (error) {
+    return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
+  }
+  const model = body.model as string;
+  if (!isChatGptWebModelSlug(model)) {
+    return formatErrorResponse(404, "invalid_request_error", "Chat Completions supports only the local ChatGPT Web model IDs");
+  }
+  const headers = new Headers(req.headers);
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  headers.set("content-type", "application/json");
+  const target = new URL(req.url);
+  target.pathname = "/v1/responses";
+  const response = await responseRequest(new Request(target, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal: req.signal,
+  }), config, adapterFactory, options);
+  if (!response.ok) return response;
+  if (body.stream === true) {
+    if (!response.body) return formatErrorResponse(502, "invalid_response_error", "Responses stream is missing");
+    return new Response(asChatCompletionSSE(response.body, model, includeUsage), {
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        "connection": "keep-alive",
+        "x-accel-buffering": "no",
+      },
+    });
+  }
+  try {
+    const data = await response.json() as Record<string, unknown>;
+    if (data.status === "failed") {
+      return formatErrorResponse(502, "upstream_error",
+        typeof (data.error as { message?: unknown } | null)?.message === "string"
+          ? (data.error as { message: string }).message : "ChatGPT Web response failed");
+    }
+    return Response.json(asChatCompletionResponse(data));
+  } catch (error) {
+    return formatErrorResponse(502, "invalid_response_error", error instanceof Error ? error.message : String(error));
+  }
 }
 
 export async function compactRequest(
@@ -1179,6 +1298,7 @@ export function startServer(
           );
         }
         return httpTurns.track(async signal => {
+          if (isOpenAiCompatibleModelDiscovery(req)) return openAiCompatibleModelsRequest(config);
           const request = ++modelCatalogRequests;
           const started = Date.now();
           const recordResult = (response: Response, failure?: ModelCatalogFailure): Response => {
@@ -1225,6 +1345,17 @@ export function startServer(
           return recordResult(response, failure);
         }, req.signal, process.platform, "models");
       }
+      if (req.method === "GET" && url.pathname.startsWith("/v1/models/")) {
+        if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
+        if (!isOpenAiCompatibleModelDiscovery(req)) return formatErrorResponse(404, "invalid_request_error", "Unknown native model endpoint");
+        let modelId: string;
+        try {
+          modelId = decodeURIComponent(url.pathname.slice("/v1/models/".length));
+        } catch {
+          return formatErrorResponse(400, "invalid_request_error", "Malformed model ID");
+        }
+        return openAiCompatibleModelsRequest(config, modelId);
+      }
       if (req.method === "GET" && url.pathname === "/v1/responses") {
         return new Response("Responses WebSocket transport is not enabled on this local route", {
           status: 426,
@@ -1243,6 +1374,20 @@ export function startServer(
           req.signal,
           process.platform,
           "responses",
+        );
+      }
+      if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
+        if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
+        return httpTurns.track(
+          (signal, bindIdentity) => chatCompletionsRequest(
+            new Request(req, { signal }),
+            config,
+            dependencies.adapterFactory,
+            { onTurnIdentity: bindIdentity },
+          ),
+          req.signal,
+          process.platform,
+          "chat_completions",
         );
       }
       if (req.method === "POST" && url.pathname === "/v1/responses/compact") {

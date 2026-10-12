@@ -168,6 +168,130 @@ and workspace policies; it does not bypass authentication or access controls.
 </details>
 
 <details>
+<summary><strong>Experimental OpenAI-compatible Responses clients (Hermes, Pi, Jcode)</strong></summary>
+
+The local launcher daemon exposes a **Responses-style HTTP interface** on loopback
+(`http://127.0.0.1:17841/v1`). This is a bridge to an authenticated ChatGPT **browser session**, not
+the official OpenAI API; keep the launcher signed in and running. Start by inspecting the models
+your session actually offers:
+
+```bash
+curl -fsS http://127.0.0.1:17841/v1/models
+```
+
+Choose an `id` from the response's `data` array and substitute it for `MODEL_ID` below.
+Unauthenticated discovery (or discovery with a local dummy key) returns the standard OpenAI
+`{ "object": "list", "data": [{ "id": "…", "object": "model", … }] }` shape. The existing native
+Codex catalog remains available to authenticated Codex clients as `models[].slug`.
+The flat aliases are `chatgpt-low`, `chatgpt-medium`, `chatgpt-high`, `chatgpt-xhigh`, and
+`chatgpt-pro`. Namespaced alternatives include `chatgpt-web/gpt-6-sol` and
+`chatgpt-web/gpt-6-sol-instant`. The bridge maps each public model ID and requested reasoning
+effort to a supported browser model and mode; supported efforts and available models depend on
+your ChatGPT plan. Do not substitute upstream transport identities such as `gpt-5.6-sol` for
+a `chatgpt-…` identifier.
+
+```bash
+# Replace this example with an id returned by /v1/models.
+MODEL_ID='chatgpt-low'
+
+# Nonstreaming response
+curl -fsS http://127.0.0.1:17841/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d "{\"model\":\"${MODEL_ID}\",\"input\":\"Reply with exactly: bridge ready\",\"stream\":false}"
+
+# Server-sent events (SSE); -N disables curl output buffering
+curl -N http://127.0.0.1:17841/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d "{\"model\":\"${MODEL_ID}\",\"input\":\"Reply with exactly: bridge ready\",\"stream\":true}"
+```
+
+The local Responses route does not require an OpenAI platform API key. Some generic clients insist
+on an API-key field: use a **dummy local value** where required, never a real account credential.
+Generic `/v1/models` discovery needs no upstream authorization. Native Codex clients supplying
+their actual Codex Bearer authorization still receive the upstream catalog with local models added;
+dummy keys are never forwarded as upstream credentials.
+Authentication for the browser session remains managed by the launcher. Do not expose this listener
+to other machines: local processes can access it. Separate native image/control endpoints can have
+additional authorization requirements.
+
+For other clients, set their **base URL** to `http://127.0.0.1:17841/v1` and use a discovered
+`MODEL_ID`. The primary API is **Responses** at `/v1/responses`. A compatibility route at
+`/v1/chat/completions` translates standard text, image URLs, and function-tool exchanges for
+clients such as Jcode. Clients requiring WebSockets or full OpenAI platform semantics may not work.
+Hermes 0.21.5, Pi 1.1.0, and Jcode 0.92.1 have each completed text requests and client-executed
+function-tool continuations against an isolated HTTP test server running this bridge's actual
+request handlers. This verifies the client wire format. On 2026-10-13, a separate listener built
+from the updated source also passed authenticated launcher-browser requests for `chatgpt-low`
+(nonstreaming), `chatgpt-medium` (SSE), `chatgpt-web/gpt-6-pro` with the inapplicable `xhigh`
+reasoning effort, and a Hermes one-shot. The existing production listener on port 17841 was not
+restarted because it still owned an active browser turn. Pi/Jcode browser-backed acceptance and
+browser-backed function-tool rounds remain unverified; the isolated client tool-loop tests do
+not establish those outcomes.
+
+For Hermes, merge this provider entry into `~/.hermes/config.yaml` (preserve your other providers):
+
+```yaml
+providers:
+  chatgpt-web:
+    base_url: http://127.0.0.1:17841/v1
+    api_mode: codex_responses
+    discover_models: true
+```
+
+Then select the provider and a model that appears in `/v1/models`:
+
+```bash
+# Hermes: use the configured Responses provider and allow its terminal tool:
+hermes -z 'Reply with exactly: bridge ready' --provider chatgpt-web --model chatgpt-low -t terminal
+
+# Pi: after adding the models.json provider below, run an ephemeral turn:
+pi --provider chatgpt-web --model chatgpt-low --print --no-session --no-tools \
+  'Reply with exactly: bridge ready'
+
+# Jcode: its named compatible profiles use the Chat Completions translation:
+jcode provider add local-chatgpt-web --base-url http://127.0.0.1:17841/v1 \
+  --model chatgpt-low --no-api-key
+jcode run --provider-profile local-chatgpt-web --tool-profile none \
+  'Reply with exactly: bridge ready'
+```
+
+For Pi 1.1, merge this provider into `~/.pi/agent/models.json` (preserve existing providers and
+select an ID your `/v1/models` discovery returns):
+
+```json
+{
+  "providers": {
+    "chatgpt-web": {
+      "baseUrl": "http://127.0.0.1:17841/v1",
+      "api": "openai-responses",
+      "apiKey": "local-placeholder",
+      "models": [
+        {
+          "id": "chatgpt-low",
+          "reasoning": true,
+          "input": ["text"],
+          "contextWindow": 41000,
+          "maxTokens": 8192
+        }
+      ]
+    }
+  }
+}
+```
+
+Client-executed function tools require Launcher **Full mode**. Tool results can continue a locally
+cached `previous_response_id` or a matching stateless full-transcript function call. The local
+response cache is bounded and may expire; it is not an OpenAI platform conversation store.
+
+Hermes, Pi, and Jcode provider configuration can persist local settings; inspect their provider
+options before applying them. Do not assume this bridge implements every optional endpoint,
+tool schema, conversation feature, or streaming extension that third-party clients expect.
+A non-200 generic `/v1/models` response indicates that model discovery is not ready; check whether
+the client sent an unrecognized placeholder Bearer key before checking launcher/browser health.
+
+</details>
+
+<details>
 <summary><strong>Run from source & develop</strong></summary>
 
 <a id="development"></a>

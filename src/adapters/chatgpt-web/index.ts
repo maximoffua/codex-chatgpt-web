@@ -23,6 +23,7 @@ import { parseDataUrl } from "../image";
 import { ChatGptWebAdapterError, chatGptToolTimeoutError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
+import { genericReadOnlyEnvironment } from "../../responses/generic";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
 import { createChatGptStructuredOutputValidator } from "./output-validation";
@@ -897,7 +898,12 @@ export function createChatGptWebAdapter(
         let environment: ReturnType<typeof extractChatGptTurnEnvironment> | undefined;
         if (mode.localTools) {
           try {
-            environment = environmentStore.resolve(parsed);
+            // Generic OpenAI clients have no native Codex sandbox authority. Their declared
+            // function tools are client-executed through Responses, using a virtual read-only
+            // environment that can never inherit a native workspace or network permission.
+            environment = parsed._genericOpenAiCompatible
+              ? genericReadOnlyEnvironment(parsed)
+              : environmentStore.resolve(parsed);
           } catch (error) {
             const identity = extractChatGptTurnIdentity(parsed);
             console.warn(

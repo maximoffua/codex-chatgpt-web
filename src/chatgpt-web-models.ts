@@ -463,6 +463,18 @@ export const CHATGPT_WEB_LEGACY_MODEL_ROUTES: readonly ChatGptWebAutomaticModelR
 
 /** Group only efforts with identical context and compaction budgets. */
 export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebAutomaticModelRoute[] = [
+  ...(["low", "medium", "high", "xhigh", "max"] as const).map((effort): ChatGptWebAutomaticModelRoute => ({
+    slug: `chatgpt-${effort === "max" ? "pro" : effort}`,
+    displayName: `ChatGPT ${effort === "max" ? "Pro" : effort === "xhigh" ? "Extra High" : effort[0]!.toUpperCase() + effort.slice(1)}`,
+    description: `GPT-6 ${effort === "low" ? "Sol Instant" : effort === "max" ? "Pro" : "Sol"} through ChatGPT at fixed ${effort} effort.`,
+    interactionMode: "automatic",
+    backendModel: CHATGPT_WEB_BACKEND_MODEL,
+    modelFamily: "6",
+    codexEffort: effort,
+    adapterEffort: effort,
+    requiresPro: effort === "max",
+    requiresExtraHigh: effort === "xhigh",
+  })),
   {
     slug: "chatgpt-web/gpt-6-sol-instant",
     displayName: "GPT-6 Sol Instant (Web)",
@@ -551,7 +563,8 @@ const routesBySlug = new Map(
 );
 
 export function isChatGptWebModelSlug(modelId: string): boolean {
-  return modelId.startsWith(CHATGPT_WEB_MODEL_PREFIX);
+  return modelId.startsWith(CHATGPT_WEB_MODEL_PREFIX)
+    || CHATGPT_WEB_MODEL_ROUTES.some(route => route.slug === modelId);
 }
 
 export function availableChatGptWebModelRoutes(
@@ -628,7 +641,9 @@ function resolveRouteEffort(
   capabilities: ChatGptWebAccountCapabilities,
   reasoning?: string,
 ): ChatGptWebAutomaticModelRoute {
-  if (!route.supportedCodexEfforts) return route;
+  // Fixed model identities select their own browser effort, even when a caller
+  // supplies an inapplicable reasoning level (such as Pro with xhigh).
+  if (!route.supportedCodexEfforts || route.supportedCodexEfforts.length === 1) return route;
   const effort = reasoning ?? route.codexEffort;
   if (!chatGptWebRouteEfforts(route, capabilities).includes(effort as ChatGptWebCodexEffort)) {
     throw new Error(`${route.displayName} does not support effort ${JSON.stringify(effort)} for this account`);

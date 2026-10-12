@@ -57,9 +57,9 @@ function turnReferenceInput(contract: ChatGptMcpContract): Record<string, z.ZodS
     : { turn_token: turnTokenSchema };
 }
 
-function turnReference(contract: ChatGptMcpContract, input: object): string {
+function turnReference(contract: ChatGptMcpContract, input: Record<string, unknown>): string {
   const key = contract === "safe" ? "request_id" : "turn_token";
-  const value = (input as Record<string, unknown>)[key];
+  const value = input[key];
   if (typeof value !== "string") throw new Error(`${key} is required`);
   return value;
 }
@@ -605,7 +605,7 @@ export async function runChatGptMcpServer(options: {
     }
   };
 
-  const invokeNestedNative = (
+  const invokeNestedNative = async (
     bindingId: string,
     bound: ChatGptTurnEnvironment & { expiresAt?: number },
     nestedToolName: string,
@@ -615,7 +615,16 @@ export async function runChatGptMcpServer(options: {
   ) => {
     const gateway = execGateway(bound);
     if (!gateway) {
-      throw new Error(`This Codex turn did not advertise ${nestedToolName} or the native exec gateway`);
+      // Return an actionable error result instead of throwing: the model must fall back to the
+      // caller's own tools rather than treat this native-only tool as a hard task blocker.
+      return result({
+        code: "codex_native_tool_unavailable",
+        tool: nestedToolName,
+        message: `This Codex turn did not advertise ${nestedToolName} or the native exec gateway.`
+          + " The caller's own tools may still be callable: list them with codex_tool_inventory"
+          + " with codex_tool_inventory and invoke them by wire_name with codex_tool_call"
+          + " (for example the caller's bash or edit tool).",
+      }, true);
     }
     return invoke(bindingId, bound, gateway, {
       input: execGatewayProgram(nestedToolName, freeform, payload, bound.tools.map(wireName)),
@@ -683,7 +692,16 @@ export async function runChatGptMcpServer(options: {
         }
         const gateway = execGateway(bound);
         if (!gateway) {
-          throw new Error("This Codex turn did not advertise a native command tool or the native exec gateway");
+          // Return an actionable error result instead of throwing so the model falls back to the
+          // caller's own tools instead of reporting a hard blocker.
+          return result({
+            code: "codex_native_tool_unavailable",
+            tool: "codex_exec",
+            message: "This Codex turn did not advertise a native command tool or the native exec gateway."
+              + " The caller's own tools may still be callable: list them with codex_tool_inventory"
+              + " with codex_tool_inventory and invoke them by wire_name with codex_tool_call"
+              + " (for example the caller's bash or edit tool).",
+          }, true);
         }
         return invoke(claimed.bindingId, bound, gateway, {
           input: execCommandGatewayProgram(execCommandArguments, shellCommandArguments),

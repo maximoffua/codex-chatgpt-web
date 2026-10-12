@@ -60,7 +60,7 @@ function nativeTemplateCandidate(value: unknown, requireTools: boolean): value i
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const model = value as JsonObject;
   const modelSlug = slug(model);
-  if (!modelSlug || modelSlug.startsWith(CHATGPT_WEB_MODEL_PREFIX)) return false;
+  if (!modelSlug || modelSlug.startsWith(CHATGPT_WEB_MODEL_PREFIX) || /^chatgpt-(?:low|medium|high|xhigh|pro)$/.test(modelSlug)) return false;
   // This route forwards ChatGPT authentication. Codex's own model manager keeps every list-visible
   // model in ChatGPT mode even when `supported_in_api` is false; that flag gates API-key mode, not
   // whether the backend row is a valid catalog template. The routed Web row overrides the flag to
@@ -172,7 +172,8 @@ export function augmentNativeModelCatalog(
     throw new Error("Native Codex models response is missing a models array");
   }
   const nativeModels = structuredClone(
-    catalog.models.filter(model => !slug(model)?.startsWith(CHATGPT_WEB_MODEL_PREFIX)),
+    catalog.models.filter(model => !slug(model)?.startsWith(CHATGPT_WEB_MODEL_PREFIX)
+      && !/^chatgpt-(?:low|medium|high|xhigh|pro)$/.test(slug(model) ?? "")),
   );
   if (config.subagentProtocol === "compatibility-v1") {
     for (const candidate of nativeModels) {
